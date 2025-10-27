@@ -1,6 +1,7 @@
 # Tri-Party Vault - Solana Smart Contract
 
 A secure multi-signature vault system for Solana that enables three-party collateral management with approval-based releases and built-in safety mechanisms.
+**NOTE** This is a proof of concept that was developed in solana playground and i am still making changes and working on the tests
 
 ## Overview
 
