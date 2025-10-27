@@ -1,97 +1,180 @@
-# tri_party_vault
-
-### ***🔐 Tri-Party Vault - Solana Smart Contract
+# Tri-Party Vault - Solana Smart Contract
 
 A secure multi-signature vault system for Solana that enables three-party collateral management with approval-based releases and built-in safety mechanisms.
 
----
+## Overview
 
+The Tri-Party Vault is a Solana program designed for scenarios requiring trustless collateral management between three parties: a Custodian, Borrower, and Lender. The vault enforces a configurable threshold approval system (default 2-of-3) before any collateral can be released, with additional safety features including daily caps, per-transaction limits, and pause functionality.
 
-## 🌐 Overview
+## Key Features
 
-The **Tri-Party Vault** is a Solana program designed for secure, trustless **collateral management between three roles**:
-
-- 🛡️ **Custodian**
-- 🧑‍💼 **Borrower**
-- 🏦 **Lender**
-
-This vault system enforces a **configurable multi-signature threshold** (default **2-of-3**) before allowing collateral releases. It also incorporates several **security and governance features** for production-grade usage.
-
----
-
-## ✨ Key Features
-
-### ✅ Multi-Party Approval System
-
+### Multi-Party Approval System
 - **Three Roles**: Custodian, Borrower, and Lender
-- **Threshold-Based Release**: Default 2-of-3 approval requirement
-- **Idempotent Approvals**: Parties can approve/revoke before finalization
-- **Governance-Based Rotation**: Role holders can be updated via multisig approvals
+- **Threshold-Based Releases**: Requires 2 out of 3 approvals by default
+- **Idempotent Approvals**: Each party can approve or revoke their approval before release
+- **Role Rotation**: Governance mechanism to change role holders (requires threshold approvals)
 
----
+### Safety Mechanisms
+- **Daily Release Cap**: 1,000,000,000,000 base units per 24-hour period
+- **Per-Transaction Maximum**: 500,000,000,000 base units per release
+- **Pause/Unpause**: Custodian can freeze all operations
+- **Overflow Protection**: Checked arithmetic throughout
+- **Deposit Protection**: Prevents deposits while approvals are pending
 
-### 🛡️ Safety Mechanisms
+### Token Support
+- **SPL Token & Token-2022**: Toggle via feature flag (token-2022)
+- **Associated Token Accounts**: Automatic ATA management
+- **Mint-Specific Vaults**: Each vault is tied to a specific token mint
 
-- **🔒 Daily Release Cap**: `1,000,000,000,000` base units per 24 hours
-- **📦 Per-Transaction Maximum**: `500,000,000,000` base units
-- **⏸️ Pause/Unpause**: Custodian can halt operations during emergencies
-- **🧮 Overflow Protection**: All math operations are checked
-- **🚫 Deposit Lock**: New deposits are disallowed while approvals are pending
+## Program Architecture
 
----
+### Program ID
+The program is deployed at address: 3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM
 
-### 💸 Token Support
+### PDA Seeds
+- **Vault State**: Derived from the seed components "vault", mint address, custodian address, borrower address, and lender address
+- **Vault Authority**: Derived from the seed components "authority" and the vault state account key
 
-- **SPL Token & Token-2022 Compatible**: Toggle via feature flag `token-2022`
-- **ATA Integration**: Automatic Associated Token Account creation/management
-- **Mint-Specific Vaults**: Each vault is bound to a single token mint
+### State Structure
 
----
+The VaultState account stores the following fields:
 
-### 🏗️ Program Architecture
-## 📛 Program ID
-- 3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM
-- **devnet**:(https://explorer.solana.com/address/3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM?cluster=devnet)
+- **mint**: A Pubkey that stores the token mint address for the collateral token
+- **vault_authority_bump**: A single byte that stores the PDA bump seed for the vault authority
+- **custodian**: A Pubkey representing the custodian role holder
+- **borrower**: A Pubkey representing the borrower role holder
+- **lender**: A Pubkey representing the lender role holder
+- **approvals_bitmap**: A single byte using bit flags to track which roles have approved (bit 0 for custodian, bit 1 for borrower, bit 2 for lender)
+- **amount_locked**: An unsigned 64-bit integer tracking the total amount of collateral currently locked in the vault
+- **is_frozen**: A boolean flag indicating whether the vault is currently paused
+- **threshold**: A single byte storing the number of required approvals, which defaults to 2 for a 2-of-3 setup
+- **last_cap_reset_ts**: A signed 64-bit integer storing the Unix timestamp of when the daily cap was last reset
+- **released_today**: An unsigned 64-bit integer tracking the amount of tokens released in the current 24-hour period
 
-## 📦 PDA Seeds
+## Instructions
 
-- Vault State: ["vault", mint, custodian, borrower, lender]
+### 1. Initialize Vault
+Creates a new vault with three parties and a specific token mint.
 
-- Vault Authority: ["authority", vault_state_key]
+**Parameters:**
+- custodian: The public key of the custodian
+- borrower: The public key of the borrower
+- lender: The public key of the lender
+- mint: The public key of the token mint
 
+**Accounts:**
+- vault_state: The initialized PDA account
+- vault_authority: The PDA signer account
+- mint_account: The token mint account
+- vault_ata: The vault's associated token account
+- payer: The transaction fee payer
 
-## 🧠 State Structure
-- The VaultState account maintains all core state data for the tri-party collateral vault:
+### 2. Deposit Collateral
+Any of the three parties can deposit tokens into the vault.
 
-# Token Mint Address (mint)
-- Identifies the specific SPL token this vault is associated with.
+**Parameters:**
+- amount: An unsigned 64-bit integer representing the amount to deposit
 
-# Vault Authority Bump (vault_authority_bump)
-- The bump used to derive the PDA (vault_authority) that controls vault token accounts.
+**Requirements:**
+- Signer must be custodian, borrower, or lender
+- No pending approvals (approvals_bitmap must be 0)
+- Vault not frozen
+- Amount > 0
 
-  # Custodian Role (custodian)
-- Public key representing the party assigned as the Custodian.
+### 3. Approve Release
+A party signals approval for the next release.
 
-  # Borrower Role (borrower)
-- Public key representing the party designated as the Borrower.
+**Parameters:**
+- role: A single byte value where 0 represents custodian, 1 represents borrower, and 2 represents lender
 
-# Lender Role (lender)
-- Public key representing the party serving as the Lender.
+**Requirements:**
+- Signer matches the specified role
 
-# Approvals Bitmap (approvals_bitmap)
-- A bit-flag (3 bits) indicating which of the three roles have approved the next release.
+### 4. Revoke Approval
+A party can revoke their approval before release is executed.
 
-# Amount Locked (amount_locked)
-- Total amount of tokens currently held in the vault.
+**Parameters:**
+- role: A single byte value representing the role
 
-# Pause State (is_frozen)
-- Boolean flag indicating whether the vault is paused (frozen) or active.
+**Requirements:**
+- Signer matches the specified role
 
-# Approval Threshold (threshold)
-- The number of approvals required to authorize a token release (default: 2).
+### 5. Release Collateral
+Transfer tokens from vault to a recipient when threshold approvals are met.
 
-# Daily Cap Timestamp (last_cap_reset_ts)
-- Unix timestamp of when the daily release limit was last reset.
+**Parameters:**
+- amount: An unsigned 64-bit integer representing the amount to release
 
-# Released Today (released_today)
-- Tracks the total amount of tokens released during the current 24-hour window.
+**Requirements:**
+- Approvals >= threshold (default 2)
+- Amount <= locked balance
+- Amount <= MAX_SINGLE_RELEASE
+- Daily cap not exceeded
+- Vault not frozen
+
+**Effects:**
+- Resets all approvals to 0
+- Updates daily cap tracking
+- Transfers tokens to recipient
+
+### 6. Pause
+Custodian-only: freeze all deposits and releases.
+
+### 7. Unpause
+Custodian-only: unfreeze the vault.
+
+### 8. Reset Approvals
+Custodian-only: clear all pending approvals.
+
+### 9. Rotate Role
+Change a role holder (governance action requiring threshold approvals).
+
+**Parameters:**
+- role: A single byte value representing which role to rotate
+- new_key: The public key of the new role holder
+
+### 10. Close Vault
+Close the vault account when fully drained (amount_locked = 0).
+
+## Events
+
+- **VaultInitialized**: Emitted on vault creation
+- **CollateralDeposited**: Tracks deposits
+- **ReleaseApproved**: Records approval actions
+- **CollateralReleased**: Logs successful releases
+- **Paused / Unpaused**: State change notifications
+- **StateSignal**: General state broadcast
+
+## Configuration
+
+### Risk Parameters (Configurable in Code)
+The daily cap constant is set to 1,000,000,000,000 base units, which represents the maximum amount that can be released per 24-hour period. The max single release constant is set to 500,000,000,000 base units, which represents the maximum amount per individual transaction.
+
+### Feature Flags
+In your Cargo.toml file, you can enable the token-2022 feature flag to use Token-2022 support instead of the standard Token-v1 program.
+
+## Error Codes
+
+- **InvalidRole**: Invalid role index (must be 0-2)
+- **Unauthorized**: Signer doesn't match required role/ownership
+- **NotEnoughApprovals**: Insufficient approvals for action
+- **Paused**: Operation attempted while vault is frozen
+- **AmountExceedsLocked**: Release amount exceeds available balance or max
+- **MathOverflow**: Arithmetic overflow detected
+- **InvalidAmount**: Amount must be > 0
+- **DailyCapExceeded**: Daily release limit reached
+- **PendingReleaseFlow**: Cannot deposit while approvals exist
+
+## Security Considerations
+
+1. **PDA Ownership**: All token accounts are owned by the vault_authority PDA
+2. **Role Verification**: Every privileged action verifies signer identity
+3. **Reentrancy Protection**: State updates occur before external calls
+4. **Overflow Safety**: All arithmetic uses checked operations
+5. **Mint Validation**: Ensures all operations use the correct token mint
+6. **ATA Verification**: Validates associated token account ownership
+
+## Usage Example
+
+To use this vault system, you would first initialize a vault by providing the public keys of all three parties and the token mint. Any of the three parties can then deposit collateral into the vault. When it's time to release funds, at least two of the three parties must approve the release by calling the approve release instruction with their respective role. Once the threshold is met, anyone can execute the release collateral instruction to transfer the tokens to the designated recipient. The custodian has special privileges to pause or unpause the vault in case of emergencies, and all three parties can participate in governance actions like rotating role holders when the approval threshold is met.
+
