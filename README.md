@@ -76,22 +76,22 @@ This vault system enforces a **configurable multi-signature threshold** (default
 - Public key representing the party designated as the Borrower.
 
 # Lender Role (lender)
-Public key representing the party serving as the Lender.
+- Public key representing the party serving as the Lender.
 
-Approvals Bitmap (approvals_bitmap)
-A bit-flag (3 bits) indicating which of the three roles have approved the next release.
+# Approvals Bitmap (approvals_bitmap)
+- A bit-flag (3 bits) indicating which of the three roles have approved the next release.
 
-Amount Locked (amount_locked)
-Total amount of tokens currently held in the vault.
+# Amount Locked (amount_locked)
+- Total amount of tokens currently held in the vault.
 
-Pause State (is_frozen)
-Boolean flag indicating whether the vault is paused (frozen) or active.
+# Pause State (is_frozen)
+- Boolean flag indicating whether the vault is paused (frozen) or active.
 
-Approval Threshold (threshold)
-The number of approvals required to authorize a token release (default: 2).
+# Approval Threshold (threshold)
+- The number of approvals required to authorize a token release (default: 2).
 
-Daily Cap Timestamp (last_cap_reset_ts)
-Unix timestamp of when the daily release limit was last reset.
+# Daily Cap Timestamp (last_cap_reset_ts)
+- Unix timestamp of when the daily release limit was last reset.
 
-Released Today (released_today)
-Tracks the total amount of tokens released during the current 24-hour window.
+# Released Today (released_today)
+- Tracks the total amount of tokens released during the current 24-hour window.
