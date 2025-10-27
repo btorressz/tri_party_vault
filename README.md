@@ -52,3 +52,9 @@ This vault system enforces a **configurable multi-signature threshold** (default
 ## 📛 Program ID
 - 3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM
 - **devnet**:(https://explorer.solana.com/address/3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM?cluster=devnet)
+
+## 📦 PDA Seeds
+
+- Vault State: ["vault", mint, custodian, borrower, lender]
+
+- Vault Authority: ["authority", vault_state_key]
