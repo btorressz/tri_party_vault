@@ -29,3 +29,21 @@ This vault system enforces a **configurable multi-signature threshold** (default
 - **Governance-Based Rotation**: Role holders can be updated via multisig approvals
 
 ---
+
+### 🛡️ Safety Mechanisms
+
+- **🔒 Daily Release Cap**: `1,000,000,000,000` base units per 24 hours
+- **📦 Per-Transaction Maximum**: `500,000,000,000` base units
+- **⏸️ Pause/Unpause**: Custodian can halt operations during emergencies
+- **🧮 Overflow Protection**: All math operations are checked
+- **🚫 Deposit Lock**: New deposits are disallowed while approvals are pending
+
+---
+
+### 💸 Token Support
+
+- **SPL Token & Token-2022 Compatible**: Toggle via feature flag `token-2022`
+- **ATA Integration**: Automatic Associated Token Account creation/management
+- **Mint-Specific Vaults**: Each vault is bound to a single token mint
+
+---
