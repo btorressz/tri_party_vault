@@ -27,16 +27,16 @@ The Tri-Party Vault is a Solana program designed for scenarios requiring trustle
 - **Associated Token Accounts**: Automatic ATA management
 - **Mint-Specific Vaults**: Each vault is tied to a specific token mint
 
-## Program Architecture
+## 🏗️ Program Architecture
 
-### Program ID
+### 📛 Program ID
 The program is deployed at address: 3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM **devnet**:(https://explorer.solana.com/address/3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM?cluster=devnet)
 
-### PDA Seeds
+### 🧬 PDA Seeds
 - **Vault State**: Derived from the seed components "vault", mint address, custodian address, borrower address, and lender address
 - **Vault Authority**: Derived from the seed components "authority" and the vault state account key
 
-### State Structure
+### 🧠 State Structure
 
 The VaultState account stores the following fields:
 
@@ -52,7 +52,7 @@ The VaultState account stores the following fields:
 - **last_cap_reset_ts**: A signed 64-bit integer storing the Unix timestamp of when the daily cap was last reset
 - **released_today**: An unsigned 64-bit integer tracking the amount of tokens released in the current 24-hour period
 
-## Instructions
+## 🧾 Instructions
 
 ### 1. Initialize Vault
 Creates a new vault with three parties and a specific token mint.
@@ -137,7 +137,7 @@ Change a role holder (governance action requiring threshold approvals).
 ### 10. Close Vault
 Close the vault account when fully drained (amount_locked = 0).
 
-## Events
+## 📢 Events
 
 - **VaultInitialized**: Emitted on vault creation
 - **CollateralDeposited**: Tracks deposits
@@ -146,15 +146,13 @@ Close the vault account when fully drained (amount_locked = 0).
 - **Paused / Unpaused**: State change notifications
 - **StateSignal**: General state broadcast
 
-## Configuration
+## ⚙️ Configuration
 
 ### Risk Parameters (Configurable in Code)
 The daily cap constant is set to 1,000,000,000,000 base units, which represents the maximum amount that can be released per 24-hour period. The max single release constant is set to 500,000,000,000 base units, which represents the maximum amount per individual transaction.
 
-### Feature Flags
-In your Cargo.toml file, you can enable the token-2022 feature flag to use Token-2022 support instead of the standard Token-v1 program.
 
-## Error Codes
+## ❗ Error Codes
 
 - **InvalidRole**: Invalid role index (must be 0-2)
 - **Unauthorized**: Signer doesn't match required role/ownership
@@ -166,7 +164,7 @@ In your Cargo.toml file, you can enable the token-2022 feature flag to use Token
 - **DailyCapExceeded**: Daily release limit reached
 - **PendingReleaseFlow**: Cannot deposit while approvals exist
 
-## Security Considerations
+## 🔐 Security Considerations
 
 1. **PDA Ownership**: All token accounts are owned by the vault_authority PDA
 2. **Role Verification**: Every privileged action verifies signer identity
