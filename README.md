@@ -3,26 +3,26 @@
 A secure multi-signature vault system for Solana that enables three-party collateral management with approval-based releases and built-in safety mechanisms.
 **NOTE** This is a proof of concept that was developed in solana playground and i am still making changes and working on the tests
 
-## Overview
+## 📖 Overview
 
 The Tri-Party Vault is a Solana program designed for scenarios requiring trustless collateral management between three parties: a Custodian, Borrower, and Lender. The vault enforces a configurable threshold approval system (default 2-of-3) before any collateral can be released, with additional safety features including daily caps, per-transaction limits, and pause functionality.
 
-## Key Features
+## ✨ Key Features
 
-### Multi-Party Approval System
+### ✅ Multi-Party Approval System
 - **Three Roles**: Custodian, Borrower, and Lender
 - **Threshold-Based Releases**: Requires 2 out of 3 approvals by default
 - **Idempotent Approvals**: Each party can approve or revoke their approval before release
 - **Role Rotation**: Governance mechanism to change role holders (requires threshold approvals)
 
-### Safety Mechanisms
+### 🛡️ Safety Mechanisms
 - **Daily Release Cap**: 1,000,000,000,000 base units per 24-hour period
 - **Per-Transaction Maximum**: 500,000,000,000 base units per release
 - **Pause/Unpause**: Custodian can freeze all operations
 - **Overflow Protection**: Checked arithmetic throughout
 - **Deposit Protection**: Prevents deposits while approvals are pending
 
-### Token Support
+### 💱 Token Support
 - **SPL Token & Token-2022**: Toggle via feature flag (token-2022)
 - **Associated Token Accounts**: Automatic ATA management
 - **Mint-Specific Vaults**: Each vault is tied to a specific token mint
