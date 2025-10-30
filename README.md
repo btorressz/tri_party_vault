@@ -179,3 +179,75 @@ The daily cap constant is set to 1,000,000,000,000 base units, which represents 
 
 To use this vault system, you would first initialize a vault by providing the public keys of all three parties and the token mint. Any of the three parties can then deposit collateral into the vault. When it's time to release funds, at least two of the three parties must approve the release by calling the approve release instruction with their respective role. Once the threshold is met, anyone can execute the release collateral instruction to transfer the tokens to the designated recipient. The custodian has special privileges to pause or unpause the vault in case of emergencies, and all three parties can participate in governance actions like rotating role holders when the approval threshold is met.
 
+
+
+
+## ✨ New Features Added
+
+### 🧮 Pyth Oracle Integration
+- Integration with **Pyth Network** price feeds (version 0.8.0)
+- Real-time price data for **SOL/USDC** collateral valuation
+
+---
+
+### 💵 USD-Denominated Risk Management
+- USD-based **daily release caps** (measured in micro-USDC units)
+- USD-based **per-transaction limits**
+- Separate tracking for both **token-based** and **USD-based** releases
+
+---
+
+### 🛡️ Loan-to-Value (LTV) Protection
+- Maximum **LTV ratio enforcement** (configurable in basis points)
+- Post-release **collateral validation** to prevent over-leveraging
+- Default **70% LTV (7000 bps)** with a minimum **30% collateral retention**
+
+---
+
+### ⚙️ Price Configuration System (`PriceConfig` struct)
+- Toggle to **enable/disable** Pyth price checks
+- Configurable **price feed address**
+- Adjustable **price staleness validation** window
+- Configurable **USD caps** and **LTV parameters**
+
+---
+
+### 🔄 Dual-Mode Operation
+- **Fallback mode**: Token-denominated caps when Pyth is disabled
+- **Active mode**: USD-denominated caps and LTV checks when Pyth is enabled
+
+---
+
+### 🛠️ Admin Functions
+- `set_price_feed()`: Configure Pyth oracle and enable/disable price checks
+- `set_risk_limits()`: Adjust LTV, USD caps, and price staleness parameters
+
+---
+
+### 📊 Enhanced State Tracking
+- **Mint decimals** storage for precise USD conversions
+- Dual release tracking:
+  - `released_today` (token units)
+  - `released_today_usd_1e6` (USD units, 1e6 scale)
+- **PriceConfig** is stored in vault state for persistence
+
+---
+
+### 🧑‍⚖️ Role Distinctness Validation
+- Enforces that **custodian**, **borrower**, and **lender** must be **distinct addresses**
+
+---
+
+### 📉 Conservative Price Calculation
+- Uses **price minus confidence interval** for safer collateral valuation
+
+---
+
+### 📢 Price Event Logging
+- Emits `PriceUsed` event for **transparency** and **auditing**, logging key price feed data
+
+
+
+
+
+
