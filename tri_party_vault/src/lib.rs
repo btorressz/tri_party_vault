@@ -9,15 +9,18 @@ use anchor_spl::token::{self as token_i, Mint, Token, TokenAccount, Transfer};
 use anchor_spl::token_2022::{self as token_i, Mint, Token, TokenAccount, Transfer};
 // ---------------------------------------------------------------------------
 
+// Pyth 0.8.0
+use pyth_sdk_solana::load_price_feed_from_account_info;
+
 declare_id!("3yU4CGvB2pDQPk2ACBSjy8JBTEnnvbdLS9U1couLPmVM");
 
 /// Fixed program seeds
 const SEED_VAULT: &[u8] = b"vault";
 const SEED_AUTH: &[u8] = b"authority";
 
-/// Risk knobs (example values for MVP; tweak in tests if desired)
-const DAILY_CAP: u64 = 1_000_000_000_000;       // per-day release cap (in base units)
-const MAX_SINGLE_RELEASE: u64 = 500_000_000_000; // per-tx max release
+/// Token-denominated risk knobs used when Pyth is disabled (fallback)
+const DAILY_CAP_TOKENS: u64 = 1_000_000_000_000;       // per-day release cap (base units)
+const MAX_SINGLE_RELEASE_TOKENS: u64 = 500_000_000_000; // per-tx max release (base units)
 
 #[program]
 pub mod tri_party_vault {
@@ -34,11 +37,17 @@ pub mod tri_party_vault {
         // Reinit protection via `init` on the VaultState PDA.
         let state = &mut ctx.accounts.vault_state;
 
+        // Role keys must be distinct
+        require!(custodian != borrower, ErrorCode::RoleNotDistinct);
+        require!(custodian != lender, ErrorCode::RoleNotDistinct);
+        require!(borrower != lender, ErrorCode::RoleNotDistinct);
+
         // Pin the passed mint to the provided mint account (belt & suspenders)
         require_keys_eq!(ctx.accounts.mint_account.key(), mint, ErrorCode::Unauthorized);
 
         // Persist core state
         state.mint = mint;
+        state.mint_decimals = ctx.accounts.mint_account.decimals;
         state.custodian = custodian;
         state.borrower = borrower;
         state.lender = lender;
@@ -53,9 +62,20 @@ pub mod tri_party_vault {
         let bump: u8 = ctx.bumps.vault_authority;
         state.vault_authority_bump = bump;
 
-        // Init daily cap trackers
+        // Init daily cap trackers (token & USD)
         state.last_cap_reset_ts = Clock::get()?.unix_timestamp;
         state.released_today = 0;
+        state.released_today_usd_1e6 = 0;
+
+        // Default price config (disabled)
+        state.price_config = PriceConfig {
+            enabled: false,
+            sol_usdc_price_feed: Pubkey::default(),
+            max_ltv_bps: 7000,                 // 70% LTV -> min collateral 30% retained
+            max_single_release_usd_1e6: 1_000_000_000, // 1,000 USDC
+            daily_cap_usd_1e6: 5_000_000_000,  // 5,000 USDC
+            max_price_staleness_secs: 90,
+        };
 
         // Extra runtime checks for PDAs/ATAs (ATA macro guarantees, but we assert anyway)
         require_keys_eq!(
@@ -80,13 +100,6 @@ pub mod tri_party_vault {
         require!(amount > 0, ErrorCode::InvalidAmount);
         let state = &mut ctx.accounts.vault_state;
         require!(!state.is_frozen, ErrorCode::Paused);
-
-        // Must match vault mint
-        require_keys_eq!(
-            ctx.accounts.mint_account.key(),
-            state.mint,
-            ErrorCode::Unauthorized
-        );
 
         // Prevent depositing while approvals exist (clear flow ambiguity)
         require!(state.approvals_bitmap == 0, ErrorCode::PendingReleaseFlow);
@@ -168,7 +181,7 @@ pub mod tri_party_vault {
         Ok(())
     }
 
-    /// Release to a recipient ATA when approvals >= threshold.
+    /// Release to a recipient ATA when approvals >= threshold; USD caps/LTV enforced if Pyth is enabled.
     pub fn release_collateral(ctx: Context<ReleaseCollateral>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
@@ -179,29 +192,129 @@ pub mod tri_party_vault {
         let approvals = bitcount(state.approvals_bitmap);
         require!(approvals >= state.threshold as u32, ErrorCode::NotEnoughApprovals);
 
-        // Bounds
+        // Bounds (token-denominated basic checks)
         require!(amount <= state.amount_locked, ErrorCode::AmountExceedsLocked);
-        require!(amount <= MAX_SINGLE_RELEASE, ErrorCode::AmountExceedsLocked);
         require!(ctx.accounts.recipient.key() != Pubkey::default(), ErrorCode::Unauthorized);
 
-        // Must match vault mint
-        require_keys_eq!(
-            ctx.accounts.mint_account.key(),
-            state.mint,
-            ErrorCode::Unauthorized
-        );
-
-        // Daily cap window reset + enforcement
+        // Daily cap window reset (both token and USD counters)
         let now = Clock::get()?.unix_timestamp;
         if now - state.last_cap_reset_ts >= 86_400 {
             state.last_cap_reset_ts = now;
             state.released_today = 0;
+            state.released_today_usd_1e6 = 0;
         }
-        let new_today = state
-            .released_today
-            .checked_add(amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-        require!(new_today <= DAILY_CAP, ErrorCode::DailyCapExceeded);
+
+        // Token-denominated fallback caps when Pyth disabled
+        if !state.price_config.enabled {
+            let new_today = state
+                .released_today
+                .checked_add(amount)
+                .ok_or(ErrorCode::MathOverflow)?;
+            require!(amount <= MAX_SINGLE_RELEASE_TOKENS, ErrorCode::AmountExceedsLocked);
+            require!(new_today <= DAILY_CAP_TOKENS, ErrorCode::DailyCapExceeded);
+            state.released_today = new_today;
+        }
+
+        // USD-denominated caps & LTV when Pyth enabled
+        if state.price_config.enabled {
+            let price_acc_key = ctx
+                .accounts
+                .pyth_price_acc
+                .as_ref()
+                .map(|a| a.key())
+                .unwrap_or(Pubkey::default());
+            require_keys_eq!(price_acc_key, state.price_config.sol_usdc_price_feed, ErrorCode::Unauthorized);
+
+            let price_acc_info = ctx
+                .accounts
+                .pyth_price_acc
+                .as_ref()
+                .ok_or(ErrorCode::PriceAccountInvalid)?
+                .to_account_info();
+
+            let feed = load_price_feed_from_account_info(&price_acc_info)
+                .map_err(|_| ErrorCode::PriceAccountInvalid)?;
+
+            // ---- FIX: pass u64 staleness window to Pyth (0.8.0) ----
+            require!(state.price_config.max_price_staleness_secs >= 0, ErrorCode::InvalidRiskParams);
+            let staleness: u64 = state
+                .price_config
+                .max_price_staleness_secs
+                .try_into()
+                .map_err(|_| ErrorCode::InvalidRiskParams)?;
+            let px = feed
+                .get_price_no_older_than(now, staleness)
+                .ok_or(ErrorCode::PriceStale)?;
+            // --------------------------------------------------------
+
+            // Conservative price: price - conf
+            let p_conservative = (px.price as i128)
+                .checked_sub(px.conf as i128)
+                .ok_or(ErrorCode::MathOverflow)?;
+            if p_conservative <= 0 {
+                return err!(ErrorCode::PriceNonPositive);
+            }
+
+            // Convert amounts to USD 1e6 (micro-USDC) using integer math:
+            // usd_1e6 = amount * (price - conf) * 10^6 / (10^mint_decimals * 10^(-expo))
+            let denom_exp: i32 = state.mint_decimals as i32 - px.expo; // = mint_dec + (-expo)
+            let denom = ten_pow_u128(denom_exp).ok_or(ErrorCode::MathOverflow)?;
+            let amount_i = amount as u128;
+            let p_i = p_conservative as u128;
+
+            let release_usd_num = amount_i
+                .checked_mul(p_i)
+                .and_then(|v| v.checked_mul(1_000_000u128))
+                .ok_or(ErrorCode::MathOverflow)?;
+            let release_usd_1e6 = release_usd_num
+                .checked_div(denom)
+                .ok_or(ErrorCode::MathOverflow)?; // floor conservative
+
+            let total_usd_num = (state.amount_locked as u128)
+                .checked_mul(p_i)
+                .and_then(|v| v.checked_mul(1_000_000u128))
+                .ok_or(ErrorCode::MathOverflow)?;
+            let total_usd_1e6 = total_usd_num
+                .checked_div(denom)
+                .ok_or(ErrorCode::MathOverflow)?;
+
+            // Per-tx USD cap
+            require!(
+                release_usd_1e6 <= state.price_config.max_single_release_usd_1e6 as u128,
+                ErrorCode::UsdCapExceeded
+            );
+
+            // Daily USD cap
+            let new_today_usd = (state.released_today_usd_1e6 as u128)
+                .checked_add(release_usd_1e6)
+                .ok_or(ErrorCode::MathOverflow)?;
+            require!(
+                new_today_usd <= state.price_config.daily_cap_usd_1e6 as u128,
+                ErrorCode::UsdCapExceeded
+            );
+
+            // LTV guard (interpreted as: post-release collateral must be >= (1 - LTV) * pre-release)
+            let remaining_usd_1e6 = total_usd_1e6
+                .checked_sub(release_usd_1e6)
+                .ok_or(ErrorCode::MathOverflow)?;
+            let min_remaining_usd_1e6 = total_usd_1e6
+                .checked_mul((10_000 - state.price_config.max_ltv_bps) as u128)
+                .and_then(|v| v.checked_div(10_000))
+                .ok_or(ErrorCode::MathOverflow)?;
+            require!(remaining_usd_1e6 >= min_remaining_usd_1e6, ErrorCode::LtvBreach);
+
+            // Track USD daily
+            state.released_today_usd_1e6 = new_today_usd as u64;
+
+            // Emit price diagnostic
+            emit!(PriceUsed {
+                feed: state.price_config.sol_usdc_price_feed,
+                price: px.price,
+                conf: px.conf,
+                expo: px.expo,
+                publish_time: px.publish_time,
+            });
+        }
 
         // Extra ownership pinning
         require_keys_eq!(
@@ -210,7 +323,7 @@ pub mod tri_party_vault {
             ErrorCode::Unauthorized
         );
 
-        // ---- FIX FOR E0716: give the signer seeds a stable binding lifetime ----
+        // ---- PDA signer seeds (stable lifetime binding) ----
         let state_key = state.key();
         let signer_seed_slice: [&[u8]; 3] = [
             SEED_AUTH,
@@ -219,7 +332,7 @@ pub mod tri_party_vault {
         ];
         let signer: &[&[u8]] = &signer_seed_slice;
         let signer_arr: &[&[&[u8]]] = &[signer];
-        // -----------------------------------------------------------------------
+        // ----------------------------------------------------
 
         // CPI transfer vault_ata -> recipient_ata
         let cpi_accounts = Transfer {
@@ -234,12 +347,11 @@ pub mod tri_party_vault {
         );
         token_i::transfer(cpi_ctx, amount)?;
 
-        // Update accounting & caps, then reset approvals
+        // Update accounting & reset approvals
         state.amount_locked = state
             .amount_locked
             .checked_sub(amount)
             .ok_or(ErrorCode::MathOverflow)?;
-        state.released_today = new_today;
         state.approvals_bitmap = 0;
 
         emit!(CollateralReleased {
@@ -318,6 +430,33 @@ pub mod tri_party_vault {
         Ok(())
     }
 
+    /// Admin: set Pyth price feed and on/off.
+    pub fn set_price_feed(ctx: Context<Admin>, feed: Pubkey, enabled: bool) -> Result<()> {
+        let s = &mut ctx.accounts.vault_state;
+        require_keys_eq!(ctx.accounts.custodian.key(), s.custodian, ErrorCode::Unauthorized);
+        s.price_config.sol_usdc_price_feed = feed;
+        s.price_config.enabled = enabled;
+        Ok(())
+    }
+
+    /// Admin: set risk limits for USD caps & staleness; and maximum LTV (bps).
+    pub fn set_risk_limits(
+        ctx: Context<Admin>,
+        max_ltv_bps: u16,
+        max_single_usd_1e6: u64,
+        daily_cap_usd_1e6: u64,
+        max_price_staleness_secs: i64,
+    ) -> Result<()> {
+        let s = &mut ctx.accounts.vault_state;
+        require_keys_eq!(ctx.accounts.custodian.key(), s.custodian, ErrorCode::Unauthorized);
+        require!(max_ltv_bps <= 9_999, ErrorCode::InvalidRiskParams); // disallow 100%+
+        s.price_config.max_ltv_bps = max_ltv_bps;
+        s.price_config.max_single_release_usd_1e6 = max_single_usd_1e6;
+        s.price_config.daily_cap_usd_1e6 = daily_cap_usd_1e6;
+        s.price_config.max_price_staleness_secs = max_price_staleness_secs;
+        Ok(())
+    }
+
     /// Close the vault account when fully drained; refunds rent to `recipient`.
     pub fn close_vault(_ctx: Context<CloseVault>) -> Result<()> {
         // All checks are in the account constraints
@@ -392,6 +531,9 @@ pub struct DepositCollateral<'info> {
     )]
     pub vault_ata: Account<'info, TokenAccount>,
 
+    #[account(
+        constraint = mint_account.key() == vault_state.mint @ ErrorCode::Unauthorized
+    )]
     pub mint_account: Account<'info, Mint>,
 
     /// Depositor must be one of the three roles
@@ -435,6 +577,9 @@ pub struct ReleaseCollateral<'info> {
     )]
     pub vault_ata: Account<'info, TokenAccount>,
 
+    #[account(
+        constraint = mint_account.key() == vault_state.mint @ ErrorCode::Unauthorized
+    )]
     pub mint_account: Account<'info, Mint>,
 
     /// Recipient owner (for event & ATA checks)
@@ -447,6 +592,10 @@ pub struct ReleaseCollateral<'info> {
         constraint = recipient_ata.mint == mint_account.key()
     )]
     pub recipient_ata: Account<'info, TokenAccount>,
+
+    /// Optional Pyth price account (required when price checks are enabled)
+    /// CHECK: read-only; validated by key equality in handler when enabled
+    pub pyth_price_acc: Option<UncheckedAccount<'info>>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -462,6 +611,13 @@ pub struct Pause<'info> {
 pub struct RotateRole<'info> {
     #[account(mut)]
     pub vault_state: Account<'info, VaultState>,
+}
+
+#[derive(Accounts)]
+pub struct Admin<'info> {
+    #[account(mut)]
+    pub vault_state: Account<'info, VaultState>,
+    pub custodian: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -488,6 +644,9 @@ pub struct CloseVault<'info> {
         associated_token::authority = vault_authority
     )]
     pub vault_ata: Account<'info, TokenAccount>,
+    #[account(
+        constraint = mint_account.key() == vault_state.mint @ ErrorCode::Unauthorized
+    )]
     pub mint_account: Account<'info, Mint>,
     /// CHECK: PDA signer confirmation
     #[account(
@@ -502,6 +661,7 @@ pub struct CloseVault<'info> {
 #[account]
 pub struct VaultState {
     pub mint: Pubkey,
+    pub mint_decimals: u8,
     pub vault_authority_bump: u8,
     pub custodian: Pubkey,
     pub borrower: Pubkey,
@@ -510,15 +670,29 @@ pub struct VaultState {
     pub amount_locked: u64,
     pub is_frozen: bool,
 
-    // New: governance & safety
+    // Governance & safety
     pub threshold: u8,        // default 2 (2-of-3)
     pub last_cap_reset_ts: i64,
-    pub released_today: u64,
+    pub released_today: u64,          // token units (fallback)
+    pub released_today_usd_1e6: u64,  // USD micro when Pyth enabled
+
+    pub price_config: PriceConfig,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
+pub struct PriceConfig {
+    pub enabled: bool,
+    pub sol_usdc_price_feed: Pubkey,
+    pub max_ltv_bps: u16,                 // e.g. 7000 = 70% LTV
+    pub max_single_release_usd_1e6: u64,  // per-tx cap in micro-USDC
+    pub daily_cap_usd_1e6: u64,           // daily cap in micro-USDC
+    pub max_price_staleness_secs: i64,    // price freshness window
 }
 
 impl VaultState {
     pub const SIZE: usize =
         32 + // mint
+        1  + // mint_decimals
         1  + // vault_authority_bump
         32 + // custodian
         32 + // borrower
@@ -528,7 +702,15 @@ impl VaultState {
         1  + // is_frozen
         1  + // threshold
         8  + // last_cap_reset_ts
-        8;   // released_today
+        8  + // released_today
+        8  + // released_today_usd_1e6
+        // PriceConfig
+        1  + // enabled
+        32 + // sol_usdc_price_feed
+        2  + // max_ltv_bps
+        8  + // max_single_release_usd_1e6
+        8  + // daily_cap_usd_1e6
+        8;   // max_price_staleness_secs
 }
 
 /* -------------------------------- Events ---------------------------------- */
@@ -574,19 +756,30 @@ pub struct StateSignal {
     pub amount_locked: u64,
 }
 
+#[event]
+pub struct PriceUsed {
+    pub feed: Pubkey,
+    pub price: i64,
+    pub conf: u64,
+    pub expo: i32,
+    pub publish_time: i64,
+}
+
 /* ------------------------------- Error Codes ------------------------------ */
 
 #[error_code]
 pub enum ErrorCode {
     #[msg("Invalid role")]
     InvalidRole,
+    #[msg("Roles must be distinct")]
+    RoleNotDistinct,
     #[msg("This action is unauthorized")]
     Unauthorized,
     #[msg("Not enough approvals (need at least threshold)")]
     NotEnoughApprovals,
     #[msg("Vault is paused")]
     Paused,
-    #[msg("Release amount exceeds locked total or per-tx max")]
+    #[msg("Release amount exceeds locked total or cap")]
     AmountExceedsLocked,
     #[msg("Math overflow")]
     MathOverflow,
@@ -598,6 +791,18 @@ pub enum ErrorCode {
     DailyCapExceeded,
     #[msg("Cannot deposit while a release flow is pending (approvals exist)")]
     PendingReleaseFlow,
+    #[msg("Pyth price account invalid")]
+    PriceAccountInvalid,
+    #[msg("Price is stale")]
+    PriceStale,
+    #[msg("Non-positive price")]
+    PriceNonPositive,
+    #[msg("USD cap exceeded")]
+    UsdCapExceeded,
+    #[msg("LTV check failed")]
+    LtvBreach,
+    #[msg("Invalid risk parameters")]
+    InvalidRiskParams,
 }
 
 /* ------------------------------- Utilities -------------------------------- */
@@ -626,3 +831,17 @@ fn bitcount(bitmap: u8) -> u32 {
 fn is_role(state: &VaultState, k: Pubkey) -> bool {
     k == state.custodian || k == state.borrower || k == state.lender
 }
+
+/// 10^exp as u128 (exp must be >= 0 and small enough to fit)
+#[inline]
+fn ten_pow_u128(exp: i32) -> Option<u128> {
+    if exp < 0 {
+        return None;
+    }
+    let mut v: u128 = 1;
+    for _ in 0..(exp as u32) {
+        v = v.checked_mul(10)?;
+    }
+    Some(v)
+}
+
